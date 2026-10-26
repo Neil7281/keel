@@ -4,13 +4,11 @@ A personal planner in one file. It covers tasks, reminders, a Jira-style board, 
 
 ## Run it
 
-- **Locally:** open `site/index.html` in your browser. No server or install is needed.
-- **Free hosting:** pick one of these.
-  - **Netlify Drop:** drag the `site/` folder onto https://app.netlify.com/drop.
-  - **GitHub Pages:** push this folder to a GitHub repo, then go to Settings → Pages → Deploy from branch and pick `main` with `/site`.
-  - **Cloudflare Pages / Vercel:** point them at the `site/` folder. There is no build command.
+- **Locally:** open `docs/index.html` in your browser.
+- **GitHub Pages:** go to the repo's Settings → Pages → Deploy from a branch, then pick `main` and `/docs`. The site goes live at `https://<username>.github.io/keel/`.
+- **iPhone:** open the Pages link in Safari, tap Share, then tap **Add to Home Screen**. It then runs full-screen and works offline. Notifications need iOS 16.4 or later; turn them on in Keel's Settings.
 
-Edit `keel.html`, then run `./build.sh` to regenerate `site/index.html`.
+Edit `keel.html`, then run `./build.sh` to regenerate `docs/`. Then commit and push.
 
 ## Where data is saved
 
