@@ -1,5 +1,5 @@
 // Offline support: app files are network-first with a cache fallback; fonts are cache-first.
-const CACHE = "keel-20261025231442";
+const CACHE = "keel-20261025235226";
 const CORE = ["./", "./index.html", "./manifest.webmanifest", "./icon-192.png", "./icon-512.png", "./apple-touch-icon.png"];
 
 self.addEventListener("install", e => {

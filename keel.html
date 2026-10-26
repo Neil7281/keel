@@ -362,7 +362,7 @@ const COLORS = ["#2b47c8", "#17734b", "#b4501f", "#8a3fb8", "#0f7f8c", "#b8323f"
 
 // ---------- storage: claude.ai account store when available, browser storage otherwise ----------
 const LS_KEY = "keel.v1";
-const caps = { sample: null, downloads: null };
+const caps = { sample: null, downloads: null, mcp: null };
 const Store = {
   items: new Map(), mode: "loading", col: null, dirty: new Set(), timers: new Map(), chains: new Map(), lsTimer: null, onChange: () => {},
   all(kind) { return [...this.items.values()].filter(i => i.kind === kind); },
@@ -447,7 +447,7 @@ function startLocal(note) {
 }
 
 async function boot() {
-  Store.onChange = scheduleRender;
+  Store.onChange = () => { scheduleRender(); scheduleCalSync(); };
   if (!window.claude || typeof window.claude.use !== "function") { startLocal(); afterBoot(); setupPWA(); return; }
   setSync("loading"); scheduleRender();
   let db = null, user = null, id = null;
@@ -455,6 +455,7 @@ async function boot() {
   try { id = user ? await user.id() : null; } catch {}
   window.claude.use("sample").then(s => { caps.sample = s; scheduleRender(); }).catch(() => {});
   window.claude.use("downloads").then(d => { caps.downloads = d; }).catch(() => {});
+  window.claude.use("mcp").then(m => { caps.mcp = m; scheduleRender(); scheduleCalSync(); }).catch(() => {});
   if (!db || !id) { startLocal("Sign in to claude.ai to keep tasks in your account. For now they're saved in this browser only."); afterBoot(); return; }
   Store.col = db.collection("data/users/" + id);
   Store.mode = "cloud";
@@ -912,6 +913,7 @@ function openTask(id) {
       <div class="field"><label for="d-pri">Priority</label><select id="d-pri" data-f="priority">${Object.entries(PRI).map(([k, v]) => `<option value="${k}" ${t.priority === k ? "selected" : ""}>${v}</option>`).join("")}</select></div>
       <div class="field"><label for="d-rep">Repeats</label><select id="d-rep" data-f="repeat">${Object.entries(REPEAT).map(([k, v]) => `<option value="${k}" ${(t.repeat || "none") === k ? "selected" : ""}>${v}</option>`).join("")}</select></div>
     </div>
+    <div id="d-cal" class="muted" style="font-size:13px;display:flex;gap:8px;align-items:center;flex-wrap:wrap" ${calOn() ? "" : "hidden"}></div>
     <div class="field"><label for="d-goal">Goal</label><select id="d-goal" data-f="goalId"><option value="">No goal</option>${goals().map(g => `<option value="${g.id}" ${t.goalId === g.id ? "selected" : ""}>${esc(g.title)}</option>`).join("")}</select></div>
     <div class="field"><span class="lb">Steps</span><ul class="subs" id="d-subs">${subsHTML(t)}</ul>
       <form class="inline-add" data-act-submit="sub-add"><input id="d-sub-new" placeholder="Add a step" aria-label="Add a step"><button class="btn sm" type="submit">Add</button></form>
@@ -924,6 +926,7 @@ function openTask(id) {
     </div>
     <span class="muted mono" style="font-size:12px">Created ${fmtShort(dayStr(new Date(t.created)))}${t.doneAt ? " · done " + fmtShort(doneDay(t)) : ""}</span>`, "task", id);
   $("#drawer").dataset.id = id;
+  refreshCalLine();
 }
 const subsHTML = t => (t.subtasks || []).map(s => `<li class="${s.done ? "d" : ""}" data-sid="${s.id}"><input type="checkbox" ${s.done ? "checked" : ""} data-act="sub-toggle" aria-label="${esc(s.t)}"><span>${esc(s.t)}</span><button class="btn ghost sm" data-act="sub-del" aria-label="Remove step">${IC.x}</button></li>`).join("");
 function refreshSubs(t) { const ul = $("#d-subs"); if (ul) ul.innerHTML = subsHTML(t); }
@@ -953,6 +956,14 @@ function openSettings() {
   openDrawer(`${drawerHead("Settings")}
     <div class="sec"><h2>Where your data lives</h2><p class="muted" style="margin:0">${Store.mode === "cloud" ? "Saved privately to your claude.ai account. It follows you to any device where you open this page while signed in." : "Saved in this browser on this device. Back it up below if you clear your browser data or switch devices."}</p></div>
     ${!window.claude && !isStandalone() ? `<div class="sec"><h2>Install on your phone</h2><p class="muted" style="margin:0">${isIOS() ? "In Safari, tap the Share button, then <b>Add to Home Screen</b>. Keel opens full-screen like an app and works offline." : "On iPhone: open this page in Safari, tap Share, then <b>Add to Home Screen</b>. On Android: Chrome menu, then <b>Install app</b>."}</p></div>` : ""}
+    ${caps.mcp ? `<div class="sec"><h2>Reminders on your phone</h2>
+      <p class="muted" style="margin:0">Keel adds each reminder to your Google Calendar. The Google Calendar app on your phone then alerts you at that time, even when Keel is closed. Install it and allow its notifications.</p>
+      <div class="actions">${settings().calSync
+        ? `<span class="chip ok">On</span><button class="btn" data-act="cal-off">Turn off and remove upcoming events</button>`
+        : `<button class="btn primary" data-act="cal-on">${IC.cal}Send reminders to Google Calendar</button>`}</div>
+      <label style="display:flex;gap:8px;align-items:center;font-size:14px"><input type="checkbox" id="cal-email" data-act="cal-email" ${settings().calEmail ? "checked" : ""} style="width:17px;height:17px;accent-color:var(--accent)">Also email me at reminder time</label>
+      ${calProblem ? `<div class="chip bad" style="white-space:normal">${esc(calProblem)}</div><div><button class="btn sm" data-act="cal-retry">Try again</button></div>` : ""}
+      <span class="muted" style="font-size:13px">Events are titled “Keel · task name”, last 15 minutes, and don't show you as busy.</span></div>` : ""}
     <div class="sec"><h2>Reminders</h2>
       <p class="muted" style="margin:0">Keel pops up reminders while this page is open. To get reminders even when it's closed, add them to your calendar app.</p>
       <div class="actions">
@@ -982,6 +993,7 @@ $("#drawer").addEventListener("input", e => {
     if (f === "remind" && v && !t.due) { t.due = v.slice(0, 10); const dd = $("#d-due"); if (dd) dd.value = t.due; }
     Store.put(t);
     const gc = gcalUrl(t), a = $("#d-gcal"); if (a) { a.hidden = !gc; a.href = gc || "#"; }
+    if (f === "remind" || f === "title") { t.calFailed = null; refreshCalLine(); }
   } else if (dr.kind === "goal" && el.dataset.g) {
     const g = Store.get(dr.id); if (!g) return;
     if (el.dataset.g === "title" && !el.value.trim()) return;
@@ -1039,6 +1051,7 @@ function saveNote(srcId) {
 }
 function delWithUndo(item, label) {
   const copy = clone(item);
+  if (item.calEventId && caps.mcp) caps.mcp.callTool(CAL, "delete_event", { eventId: item.calEventId, notificationLevel: "NONE" }).catch(() => {});
   Store.remove(item.id);
   if (state.drawer && state.drawer.id === item.id) closeDrawer();
   toast(label + " deleted.", [{ label: "Undo", fn: () => Store.put(copy) }]);
@@ -1091,6 +1104,10 @@ const ACTIONS = {
   notif: async () => { try { const r = await Notification.requestPermission(); toast(r === "granted" ? "Desktop notifications are on." : "Notifications weren't allowed. You'll still see reminders inside Keel."); } catch { toast("This browser view can't show desktop notifications. You'll still see reminders inside Keel."); } openSettings(); },
   "test-rem": () => { chime(); fireReminder({ id: null, title: "This is what a reminder looks like" }, true); },
   "ai-break": () => aiBreakdown(),
+  "cal-on": () => { const st = settings(); st.calSync = true; Store.put(st); calProblem = null; calSync(); openSettings(); toast("Reminders will now appear in Google Calendar."); },
+  "cal-off": () => calOff(),
+  "cal-email": el => { const st = settings(); st.calEmail = el.checked; Store.put(st); },
+  "cal-retry": () => { calProblem = null; tasks().forEach(t => { if (t.calFailed) { t.calFailed = null; Store.put(t); } }); calSync(); if (state.drawer && state.drawer.kind === "settings") openSettings(); else refreshCalLine(); },
   "ai-goal": el => aiGoal(el.closest("[data-goal]").dataset.goal),
   "ai-coach": () => aiCoach(),
 };
@@ -1186,6 +1203,91 @@ async function saveFile(name, data, type) {
   const url = URL.createObjectURL(new Blob([data], { type }));
   const a = document.createElement("a"); a.href = url; a.download = name; document.body.appendChild(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(url), 3000);
+}
+
+// ---------- phone reminders through the viewer's Google Calendar connector ----------
+const CAL = "Google Calendar", tabId = uid("tab");
+let calBusy = false, calAgain = false, calTimer = null, calProblem = null;
+function settings() { return Store.get("settings") || { id: "settings", kind: "settings", calSync: false, calEmail: false }; }
+const calOn = () => !!(caps.mcp && settings().calSync);
+const calSig = t => [t.title, t.remind, settings().calEmail ? 1 : 0].join("|");
+function scheduleCalSync() { if (!calOn() || !booted) return; clearTimeout(calTimer); calTimer = setTimeout(calSync, 2000); }
+function calWindow(t) { const e = new Date(new Date(t.remind).getTime() + 15 * 6e4); return { startTime: t.remind + ":00", endTime: localDT(e) + ":00" }; }
+const calReminders = () => settings().calEmail ? [{ method: "popup", minutes: 0 }, { method: "email", minutes: 0 }] : [{ method: "popup", minutes: 0 }];
+function eventIdOf(p) {
+  if (p && typeof p === "object") return p.id || p.eventId || (p.event && p.event.id) || null;
+  if (typeof p === "string") { const m = p.match(/"id"\s*:\s*"([^"]+)"/) || p.match(/event\s?id\W+([A-Za-z0-9_-]{8,})/i); return m ? m[1] : null; }
+  return null;
+}
+function calHandle(e, t) {
+  const code = (e && e.code) || "upstream_error";
+  if (code === "needs_reauth") calProblem = "Google Calendar needs to be reconnected. Go to claude.ai Settings → Connectors.";
+  else if (code === "server_not_connected" || code === "selection_required" || code === "server_not_found") calProblem = "Add Google Calendar in claude.ai Settings → Connectors, then try again.";
+  else if (code === "not_in_manifest" || code === "approval_required" || code === "blocked_by_policy" || code === "consent_required") calProblem = "Keel isn't allowed to use Google Calendar yet. Tap Try again and choose Allow.";
+  else if (code === "not_granted" || code === "capability_disabled" || code === "capability_removed") calProblem = "This view can't reach Google Calendar. Open Keel on claude.ai.";
+  if (calProblem) { toast(calProblem); return true; }
+  const cur = t && Store.get(t.id);
+  if (cur) { cur.calFailed = code === "tool_error" ? "Google Calendar refused the event." : "Couldn't confirm the event was added. Check Google Calendar, then tap Retry."; Store.put(cur); }
+  return code === "server_unavailable";
+}
+async function calSync() {
+  if (!calOn() || calProblem) return;
+  if (calBusy) { calAgain = true; return; }
+  calBusy = true;
+  try {
+    if (Store.col) { const lease = await Store.col.doc("lock-calendar").acquire({ holder: tabId, ttlMs: 30000 }).catch(() => ({ acquired: true })); if (!lease.acquired) return; }
+    const now = Date.now();
+    for (const t0 of tasks()) {
+      const t = Store.get(t0.id); if (!t || t.calFailed || t.example) continue;
+      const at = t.remind ? new Date(t.remind).getTime() : 0;
+      const want = isOpen(t) && t.remind && at > now - 5 * 6e4;
+      try {
+        if (want && !t.calEventId) {
+          const r = await caps.mcp.callTool(CAL, "create_event", { summary: "Keel · " + t.title, ...calWindow(t), description: (t.notes ? t.notes + "\n\n" : "") + "Reminder from Keel.",
+            overrideReminders: calReminders(), availability: "AVAILABILITY_FREE", notificationLevel: "NONE" });
+          const id = eventIdOf(r.payload), cur = Store.get(t.id);
+          if (!cur) { if (id) caps.mcp.callTool(CAL, "delete_event", { eventId: id, notificationLevel: "NONE" }).catch(() => {}); continue; }
+          if (id) { cur.calEventId = id; cur.calSig = calSig(cur); } else cur.calFailed = "The event was added, but Keel couldn't read its id, so later changes won't update it.";
+          Store.put(cur);
+        } else if (want && t.calSig !== calSig(t)) {
+          try {
+            await caps.mcp.callTool(CAL, "update_event", { eventId: t.calEventId, summary: "Keel · " + t.title, ...calWindow(t), overrideReminders: calReminders(), notificationLevel: "NONE" });
+            const cur = Store.get(t.id); if (cur) { cur.calSig = calSig(cur); Store.put(cur); }
+          } catch (e) {
+            if (e && e.code === "tool_error") { const cur = Store.get(t.id); if (cur) { cur.calEventId = null; cur.calSig = null; Store.put(cur); } } // event was removed in Calendar: recreate next pass
+            else throw e;
+          }
+        } else if (!want && t.calEventId && (!t.remind || at > now)) {
+          try { await caps.mcp.callTool(CAL, "delete_event", { eventId: t.calEventId, notificationLevel: "NONE" }); }
+          catch (e) { if (!e || e.code !== "tool_error") throw e; }
+          const cur = Store.get(t.id); if (cur) { cur.calEventId = null; cur.calSig = null; Store.put(cur); }
+        }
+      } catch (e) { if (calHandle(e, t)) break; }
+    }
+  } finally {
+    calBusy = false; refreshCalLine();
+    if (state.drawer && state.drawer.kind === "settings" && calProblem) openSettings();
+    if (calAgain) { calAgain = false; scheduleCalSync(); }
+  }
+}
+async function calOff() {
+  const st = settings(); st.calSync = false; Store.put(st);
+  const now = Date.now(), list = tasks().filter(t => t.calEventId && t.remind && new Date(t.remind).getTime() > now);
+  let removed = 0;
+  for (const t of list) {
+    try { await caps.mcp.callTool(CAL, "delete_event", { eventId: t.calEventId, notificationLevel: "NONE" }); removed++; } catch (e) { if (!e || e.code !== "tool_error") continue; }
+    const cur = Store.get(t.id); if (cur) { cur.calEventId = null; cur.calSig = null; Store.put(cur); }
+  }
+  toast(`Google Calendar reminders are off${removed ? `. Removed ${removed} upcoming event${removed > 1 ? "s" : ""}` : ""}.`);
+  if (state.drawer && state.drawer.kind === "settings") openSettings();
+}
+function refreshCalLine() {
+  const el = $("#d-cal"); if (!el || !state.drawer || state.drawer.kind !== "task") return;
+  const t = Store.get(state.drawer.id); el.hidden = !calOn() || !t || !t.remind || !isOpen(t);
+  if (el.hidden) return;
+  el.innerHTML = t.calFailed ? `<span class="chip bad" style="white-space:normal">${esc(t.calFailed)}</span><button class="btn sm" data-act="cal-retry">Retry</button>`
+    : t.calEventId && t.calSig === calSig(t) ? `<span class="chip ok">${IC.bell}On Google Calendar. Your phone will alert you.</span>`
+    : t.example ? "Example tasks aren't added to your calendar." : `<span class="chip">${IC.cal}Adding to Google Calendar…</span>`;
 }
 
 // ---------- focus timer ----------
